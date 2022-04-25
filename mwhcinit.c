@@ -145,7 +145,7 @@ void init_mwhc(uint8_t *ep, uint32_t heapsize, uint32_t esp, uint32_t stacksize,
 		*envpos++ = 0;
 	}
 	*envpos++ = 0; // terminated by empty string (or equivalently, double null byte)
-	int argc = 1;
+	int argc = 0;
 	for (char **arg = argv; *arg; arg++)
 		argc++;
 
@@ -164,13 +164,13 @@ void init_mwhc(uint8_t *ep, uint32_t heapsize, uint32_t esp, uint32_t stacksize,
 	*argp_seg = *_psp_seg = *envp_seg = *prognamep_seg = ds;
 
 #define PTR(name) \
-	printf("%20s @%08x\n", #name, name)
+	fprintf(dostrace, "%20s @%08x\n", #name, name)
 #define VAL32(name) \
-	printf("%20s @%08x = %08x\n", #name, (uint32_t) name, *(uint32_t *) name)
+	fprintf(dostrace, "%20s @%08x = %08x\n", #name, (uint32_t) name, *(uint32_t *) name)
 #define VAL16(name) \
-	printf("%20s @%08x = %04x\n", #name, (uint32_t) name, *(uint16_t *) name)
+	fprintf(dostrace, "%20s @%08x = %04x\n", #name, (uint32_t) name, *(uint16_t *) name)
 #define VAL8(name) \
-	printf("%20s @%08x = %02x\n", #name, (uint32_t) name, *(uint8_t *) name)
+	fprintf(dostrace, "%20s @%08x = %02x\n", #name, (uint32_t) name, *(uint8_t *) name)
 
 	PTR(__main); PTR(finitfunc_unknown); VAL8(initfunc_retn); PTR(initfunc_unknown); PTR(set_up_args);
 	VAL8(env); VAL32(_gda); VAL8(lahey_format_file);
@@ -190,10 +190,10 @@ void init_mwhc(uint8_t *ep, uint32_t heapsize, uint32_t esp, uint32_t stacksize,
 	VAL16(fpu_need80387); PTR(fpu_need80387_str1); PTR(fpu_need80387_str2);
 
 	// these init functions technically run with the wrong stack. they don't seem to care.
-	printf("call initfunc_unknown\n");
+	fprintf(dostrace, "call initfunc @%08x\n", initfunc_unknown);
 	((void (*)(void)) initfunc_unknown)();
 	for (void **initfunc = _mwinitfrstcall; initfunc < _mwinitlastcall; initfunc++) {
-		printf("call initfunc @%08x\n", (uint32_t) *initfunc);
+		fprintf(dostrace, "call initfunc @%08x\n", (uint32_t) *initfunc);
 		uint16_t realgs;
 		asm("mov %%gs, %0" : "=a" (realgs));
 		((void (*)(void)) *initfunc)();
@@ -202,7 +202,7 @@ void init_mwhc(uint8_t *ep, uint32_t heapsize, uint32_t esp, uint32_t stacksize,
 
 	uint32_t *sp = (void *) esp;
 	*--sp = (uint32_t) argv;
-	*--sp = 2; // argc
+	*--sp = argc;
 	*--sp = (uint32_t) do_exit;
 	ucontext_t ctx;
 	memset(&ctx, 0, sizeof(ctx));
@@ -221,7 +221,7 @@ void init_mwhc(uint8_t *ep, uint32_t heapsize, uint32_t esp, uint32_t stacksize,
 	ctx.uc_stack.ss_flags = 0;
 	ctx.uc_stack.ss_size = stacksize;
 	ctx.uc_stack.ss_sp = sp;
-	printf("call __main @%08x, ESP=%08x EBP=%08x\n", regs[REG_EIP], regs[REG_ESP], regs[REG_EBP]);
+	fprintf(dostrace, "call __main @%08x, ESP=%08x EBP=%08x\n", regs[REG_EIP], regs[REG_ESP], regs[REG_EBP]);
 	setcontext(&ctx);
 	errx(1, "failed to call __main\n");
 };

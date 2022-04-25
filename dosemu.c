@@ -10,8 +10,11 @@
 
 #include "xrun.h"
 
+FILE *dostrace;
+
 static void dumpregs(volatile greg_t *regs) {
-	fprintf(stderr, " at EIP=%08x ESP=%08x EBP=%08x\n", regs[REG_EIP], regs[REG_ESP], regs[REG_EBP]);
+	fprintf(stderr, " at EIP=%08x ESP=%08x EBP=%08x *ESP=%08x\n", regs[REG_EIP], regs[REG_ESP], regs[REG_EBP],
+			regs[REG_ESP] != 0 ? *(uint32_t *) regs[REG_ESP] : 0);
 	fprintf(stderr, "    EAX=%08x EBX=%08x ECX=%08x EDX=%08x\n", regs[REG_EAX], regs[REG_EBX], regs[REG_ECX],
 			regs[REG_EDX]);
 	fprintf(stderr, "    ESI=%08x EDI=%08x EFLAGS=%08x\n", regs[REG_ESI], regs[REG_EDI], regs[REG_EFL]);
@@ -31,15 +34,17 @@ static void dumpsegv(siginfo_t *info, char *reason, volatile greg_t *regs) {
 #define TRAPERR_INT 266
 #define EFLAG_CARRY 1
 
-uint16_t realgs;
+uint16_t realgs, realfs;
 
 static void trapsegv(int sig, siginfo_t *info, void *ctx) {
 	// restore GS to what Linux expects it to be. GS is silently expected to point to the GOT; if it doesn't, any
 	// library call will immediately crash and burn. because the MetaWare compiler liberally uses GS for other
-	// purposes, we're left with no other choice than to restore it here...
-	uint16_t emulgs;
+	// purposes, we're left with no other choice than to save and restore it here...
+	uint16_t emulgs, emulfs;
 	asm("mov %%gs, %0" : "=a" (emulgs));
+	asm("mov %%fs, %0" : "=a" (emulfs));
 	asm volatile("mov %0, %%gs" :: "a" (realgs));
+	asm volatile("mov %0, %%fs" :: "a" (realfs));
 
 	volatile greg_t *regs = ((ucontext_t *) ctx)->uc_mcontext.gregs;
 	if (info->si_code != SI_KERNEL) {
@@ -54,7 +59,6 @@ static void trapsegv(int sig, siginfo_t *info, void *ctx) {
 			reason = "other";
 		dumpsegv(info, reason, regs);
 	}
-
 	if (regs[REG_TRAPNO] != TRAPNO_GPF)
 		dumpsegv(info, "unexpected exception", regs);
 	if (regs[REG_ERR] != TRAPERR_INT)
@@ -62,75 +66,44 @@ static void trapsegv(int sig, siginfo_t *info, void *ctx) {
 	uint8_t *eip = (void *) regs[REG_EIP];
 	if (eip[0] != 0xcd || eip[1] != 0x21)
 		dumpsegv(info, "unexpected interrupt", regs);
-	uint16_t ax = regs[REG_EAX] & 0xffff;
-	uint16_t cx = regs[REG_ECX] & 0xffff;
-	uint8_t ah = ax >> 8, al = ax & 255;
-	uint8_t ch = cx >> 8, cl = cx & 255;
-	fprintf(stderr, "DOS CALL: INT 21 AH=%02x AL=%02x @%08x\n", ah, al, regs[REG_EIP]);
-	if (ah == 0x2a) {
-		regs[REG_ECX] = 2022;
-		regs[REG_EDX] = (4 << 8) + 24;
-		regs[REG_EAX] = 0;
-	} else if (ah == 0x2c) {
-		regs[REG_ECX] = (18 << 8) + 11;
-		regs[REG_EDX] = (50 << 8) + 00;
-	} else if (ah == 0x30) {
-		regs[REG_EAX] = 0x6606;
-		regs[REG_ECX] = 0x3456;
-		regs[REG_EBX] = 0x0012;
-	} else if (ax == 0x2502) {
-		fprintf(stderr, "GETINT PROT INT=%d\n", cl);
-		regs[REG_EBX] = 0x99999900 + cl;
-		regs[REG_EFL] &= ~EFLAG_CARRY;
-	} else if (ax == 0x2503) {
-		fprintf(stderr, "GETINT REAL INT=%d\n", cl);
-		regs[REG_EBX] = 0x99999900 + cl;
-		regs[REG_EFL] &= ~EFLAG_CARRY;
-	} else if (ah == 0x33) {
-		fprintf(stderr, "CTRL-BREAK %s %d\n", al == 0 ? "get" : al == 1 ? "set" : "set/get", regs[REG_EDX] & 255);
-		if (al != 1)
-			regs[REG_EDX] = 0;
-	} else if (ax == 0x2506) {
-		fprintf(stderr, "SETINT INT=%d %08x\n", cl, regs[REG_EDX]);
-		regs[REG_EFL] &= ~EFLAG_CARRY;
-	} else if (ah == 0x40) {
-		int fd = regs[REG_EBX];
-		uint32_t num = regs[REG_ECX];
-		uint8_t *ptr = regs[REG_EDX];
-		fprintf(stderr, "WRITE fd=%d num=%d %08x\n", fd, num, ptr);
-		write(fd, ptr, num);
-		regs[REG_EAX] = regs[REG_ECX];
-		regs[REG_EFL] &= ~EFLAG_CARRY;
-	} else if (ah == 0x43) {
-		uint8_t *ptr = regs[REG_EDX];
-		fprintf(stderr, "GETFATTR %s\n", ptr);
-		regs[REG_ECX] = 0x10; // FIXME this needs actual emulation now
-		regs[REG_EFL] &= ~EFLAG_CARRY;
-	} else if (ah == 0x4e) {
-		uint8_t *ptr = regs[REG_EDX];
-		fprintf(stderr, "FINDFIRST %02x %04x %s\n", al, regs[REG_ECX], ptr);
-		regs[REG_ECX] = 0x10; // FIXME this needs actual emulation now
-		regs[REG_EFL] &= ~EFLAG_CARRY;
-	} else if (ax == 0x4400) {
-		uint8_t *ptr = regs[REG_EDX];
-		fprintf(stderr, "DEVINFO %04x\n", regs[REG_EBX]);
-		regs[REG_EDX] = 0x82; // /dev/stdin
-		regs[REG_EFL] &= ~EFLAG_CARRY;
-	} else if (ah == 0x1a) {
-		uint8_t *ptr = regs[REG_EDX];
-		fprintf(stderr, "SETDTA %08x\n", ptr);
-	} else {
-		fprintf(stderr, "unsupported DOS call: INT 21 AH=%02x AL=%02x\n", ah, al);
-		dumpregs(regs);
-		exit(0);
-	}
-	regs[REG_EIP] += 2;
 
+	struct regs reg = {
+		.eax = regs[REG_EAX],
+		.ebx = regs[REG_EBX],
+		.ecx = regs[REG_ECX],
+		.edx = (void *) regs[REG_EDX],
+		.carry = regs[REG_EFL] & EFLAG_CARRY,
+	};
+	// AH and AX calls can share a single table, as long as there are no AX=0x00?? calls. and there aren't; AH=0x00
+	// is (old-style) "terminate program"
+	dosapi_handler handler = dosapi[reg.ah];
+	if (handler == NULL) {
+		handler = dosapi[reg.ax];
+		if (handler == NULL) {
+			fprintf(stderr, "unsupported DOS CALL INT 21 AH=%02x AL=%02x @%08x!\n", reg.ah, reg.al, regs[REG_EIP]);
+			dumpregs(regs);
+			exit(128);
+		}
+		fprintf(dostrace, "INT 21 AX=%04x @%08x ", reg.ax, regs[REG_EIP]);
+	} else
+		fprintf(dostrace, "INT 21 AH=%02x   @%08x ", reg.ah, regs[REG_EIP]);
+	handler(&reg);
+	fprintf(dostrace, "\n");
+	fflush(dostrace);
+	regs[REG_EAX] = reg.eax;
+	regs[REG_EBX] = reg.ebx;
+	regs[REG_ECX] = reg.ecx;
+	regs[REG_EDX] = (uint32_t) reg.edx;
+	regs[REG_EFL] = (regs[REG_EFL] & ~EFLAG_CARRY) | (reg.carry ? EFLAG_CARRY : 0);
+
+	regs[REG_EIP] += 2; // skip the int 0x21 instruction
 	asm volatile("mov %0, %%gs" :: "a" (emulgs));
+	asm volatile("mov %0, %%fs" :: "a" (emulfs));
 }
 
 static void trap(int sig, siginfo_t *info, void *ctx) {
 	asm volatile("mov %0, %%gs" :: "a" (realgs));
+	asm volatile("mov %0, %%fs" :: "a" (realfs));
 
 	greg_t *regs = ((ucontext_t *) ctx)->uc_mcontext.gregs;
 	char *reason;
@@ -160,6 +133,10 @@ static void sighandler(int sig, void (*handler)(int, siginfo_t *, void *)) {
 }
 
 void dosemu_init(void) {
+	dostrace = fopen("xrun.log", "w");
+	asm("mov %%gs, %0" : "=a" (realgs) :);
+	asm("mov %%fs, %0" : "=a" (realfs) :);
+
 	stack_t stack = {
 		.ss_flags = 0,
 		.ss_size = 5 * SIGSTKSZ,
@@ -176,6 +153,4 @@ void dosemu_init(void) {
 	sighandler(SIGILL, trap);
 	sighandler(SIGFPE, trap);
 	sighandler(SIGTRAP, trap);
-
-	asm("mov %%gs, %0" : "=a" (realgs) :);
 }
