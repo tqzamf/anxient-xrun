@@ -46,7 +46,7 @@ void init_mwhc(uint8_t *ep, uint32_t heapsize, uint32_t esp, uint32_t stacksize,
 		uint32_t heaplimit, char **envv, char **argv) {
 	if (ep[0] != 0xeb || ep[1] != 0x56)
 		errx(131, "incorrect entry point signature %02x %02x", ep[0], ep[1]);
-	if (strncmp(&ep[0x012], copyright_id, strlen(copyright_id))) {
+	if (strncmp((char *) &ep[0x012], copyright_id, strlen(copyright_id))) {
 		uint8_t temp[strlen(copyright_id) + 1];
 		memcpy(temp, &ep[0x012], strlen(copyright_id));
 		temp[strlen(copyright_id)] = 0;
@@ -110,15 +110,15 @@ void init_mwhc(uint8_t *ep, uint32_t heapsize, uint32_t esp, uint32_t stacksize,
 	// internal consistency conditions. fpu_tmp ist just the second byte of fpu_temp, and some fields are within the
 	// entry point region
 	if (fpu_tmp != &((uint8_t *) fpu_temp)[1])
-		errx(131, "illegal value for FPU temp location: %08x / %08x", fpu_temp, fpu_tmp);
+		errx(131, "illegal value for FPU temp location: %p / %p", fpu_temp, fpu_tmp);
 	if (fpu_init_cw_emc != (uint16_t *) &ep[0x5ba])
-		errx(131, "illegal value for FPU EMC87 control word location: %08x", fpu_init_cw_emc);
+		errx(131, "illegal value for FPU EMC87 control word location: %p", fpu_init_cw_emc);
 	if (fpu_init_cw != (uint16_t *) &ep[0x5b8])
-		errx(131, "illegal value for FPU 8087 control word location: %08x", fpu_init_cw);
+		errx(131, "illegal value for FPU 8087 control word location: %p", fpu_init_cw);
 	if (fpu_need80387_str1 != (uint32_t *) &ep[0x5af])
-		errx(131, "illegal value for FPU 80387 string location: %08x", fpu_need80387_str1);
+		errx(131, "illegal value for FPU 80387 string location: %p", fpu_need80387_str1);
 	if (fpu_need80387_str2 != (uint32_t *) &ep[0x5a9])
-		errx(131, "illegal value for FPU 80387 string location: %08x", fpu_need80387_str2);
+		errx(131, "illegal value for FPU 80387 string location: %p", fpu_need80387_str2);
 	if (*initfunc_retn != 0xc3)
 		errx(131, "initfunc_retn doesn't point to a RET instruction");
 
@@ -138,7 +138,7 @@ void init_mwhc(uint8_t *ep, uint32_t heapsize, uint32_t esp, uint32_t stacksize,
 		envlen += strlen(*envvar) + 1;
 	uint8_t *envblock = malloc(envlen);
 	memcpy(envblock, "MACHINE=IBMPC", 14);
-	char *envpos = &envblock[14];
+	uint8_t *envpos = &envblock[14];
 	for (char **envvar = envv; *envvar; envvar++) {
 		for (char *ch = *envvar; *ch; ch++)
 			*envpos++ = *ch;
@@ -164,7 +164,7 @@ void init_mwhc(uint8_t *ep, uint32_t heapsize, uint32_t esp, uint32_t stacksize,
 	*argp_seg = *_psp_seg = *envp_seg = *prognamep_seg = ds;
 
 #define PTR(name) \
-	fprintf(dostrace, "%20s @%08x\n", #name, name)
+	fprintf(dostrace, "%20s @%08x\n", #name, (uint32_t) name)
 #define VAL32(name) \
 	fprintf(dostrace, "%20s @%08x = %08x\n", #name, (uint32_t) name, *(uint32_t *) name)
 #define VAL16(name) \
@@ -190,10 +190,10 @@ void init_mwhc(uint8_t *ep, uint32_t heapsize, uint32_t esp, uint32_t stacksize,
 	VAL16(fpu_need80387); PTR(fpu_need80387_str1); PTR(fpu_need80387_str2);
 
 	// these init functions technically run with the wrong stack. they don't seem to care.
-	fprintf(dostrace, "call initfunc @%08x\n", initfunc_unknown);
+	fprintf(dostrace, "call initfunc @%p\n", initfunc_unknown);
 	((void (*)(void)) initfunc_unknown)();
 	for (void **initfunc = _mwinitfrstcall; initfunc < _mwinitlastcall; initfunc++) {
-		fprintf(dostrace, "call initfunc @%08x\n", (uint32_t) *initfunc);
+		fprintf(dostrace, "call initfunc @%p\n", *initfunc);
 		uint16_t realgs;
 		asm("mov %%gs, %0" : "=a" (realgs));
 		((void (*)(void)) *initfunc)();

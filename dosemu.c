@@ -59,11 +59,18 @@ static void trapsegv(int sig, siginfo_t *info, void *ctx) {
 			reason = "other";
 		dumpsegv(info, reason, regs);
 	}
+	uint8_t *eip = (void *) regs[REG_EIP];
+	if (eip[0] == 0xfa || eip[0] == 0xfb) {
+		fprintf(stderr, "CLI/STI %02x!\n", eip[0]);
+		regs[REG_EIP] += 1;
+		asm volatile("mov %0, %%gs" :: "a" (emulgs));
+		asm volatile("mov %0, %%fs" :: "a" (emulfs));
+		return;
+	}
 	if (regs[REG_TRAPNO] != TRAPNO_GPF)
 		dumpsegv(info, "unexpected exception", regs);
 	if (regs[REG_ERR] != TRAPERR_INT)
 		dumpsegv(info, "unexpected GPF", regs);
-	uint8_t *eip = (void *) regs[REG_EIP];
 	if (eip[0] != 0xcd || eip[1] != 0x21)
 		dumpsegv(info, "unexpected interrupt", regs);
 
@@ -72,6 +79,7 @@ static void trapsegv(int sig, siginfo_t *info, void *ctx) {
 		.ebx = regs[REG_EBX],
 		.ecx = regs[REG_ECX],
 		.edx = (void *) regs[REG_EDX],
+		.esi = (void *) regs[REG_ESI],
 		.carry = regs[REG_EFL] & EFLAG_CARRY,
 	};
 	// AH and AX calls can share a single table, as long as there are no AX=0x00?? calls. and there aren't; AH=0x00
@@ -94,6 +102,7 @@ static void trapsegv(int sig, siginfo_t *info, void *ctx) {
 	regs[REG_EBX] = reg.ebx;
 	regs[REG_ECX] = reg.ecx;
 	regs[REG_EDX] = (uint32_t) reg.edx;
+	regs[REG_ESI] = (uint32_t) reg.esi;
 	regs[REG_EFL] = (regs[REG_EFL] & ~EFLAG_CARRY) | (reg.carry ? EFLAG_CARRY : 0);
 
 	regs[REG_EIP] += 2; // skip the int 0x21 instruction
@@ -133,7 +142,7 @@ static void sighandler(int sig, void (*handler)(int, siginfo_t *, void *)) {
 }
 
 void dosemu_init(void) {
-	dostrace = fopen("xrun.log", "w");
+	dostrace = fopen(".xrun.log", "w");
 	asm("mov %%gs, %0" : "=a" (realgs) :);
 	asm("mov %%fs, %0" : "=a" (realfs) :);
 

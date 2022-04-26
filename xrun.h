@@ -45,6 +45,10 @@ struct regs {
 			uint8_t dh;
 		};
 	};
+	union {
+		void *esi; // only ever used as a pointer
+		uint16_t si;
+	};
 	int carry:1;
 } __attribute__((packed));
 
