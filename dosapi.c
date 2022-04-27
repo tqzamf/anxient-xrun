@@ -70,7 +70,7 @@ static void dos_exit(struct regs *r) {
 static void dos_getkey(struct regs *r) {
 	fprintf(dostrace, "GETKEY");
 	// TODO implement properly? only used for paging, and that isn't necessary on Linux
-	r->al = 10;
+	r->al = ' ';
 }
 
 // filing functions. DOS 2+ (non-FCB) FS API is very, very close to UNIX FS API. and XACT does very little to its
@@ -127,13 +127,12 @@ static void dos_seek(struct regs *r) {
 
 static void dos_devinfo(struct regs *r) {
 	fprintf(dostrace, "DEVINFO %d", r->ebx);
-	// TODO emulate correct value? only used to write to STDOUT without buffering
-	if (r->ebx == 0)
-		r->dx = 0x81; // STDIN
-	else if (r->ebx == 1 || r->ebx == 2)
-		r->dx = 0x82; // STDOUT
-	else
-		r->dx = 0; // ordinary file
+	// here we pretend that STDOUT isn't the console device. this has two effects:
+	// - XACT doesn't attempt to paginate its output, which on a Linux terminal is pointless and needs more APIs (and
+	//   makebits.exe even attempts to talk directly to the keyboard controller to paginate!?)
+	// - the MetaWare High C runtime library buffers output (theoretically saving syscalls, but it still calls DEVINFO
+	//   for every internal write)
+	r->dx = 0; // ordinary file
 	r->carry = 0;
 }
 
@@ -291,7 +290,7 @@ dosapi_handler dosapi[65536] = {
 	[0x2c] = get_time,
 	[0x30] = get_version,
 	[0x4c] = dos_exit,
-	[0x07] = dos_getkey,
+	//[0x07] = dos_getkey,
 
 	[0x19] = dos_get_drive,
 	[0x1a] = dos_set_dta,

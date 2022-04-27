@@ -60,9 +60,20 @@ static void trapsegv(int sig, siginfo_t *info, void *ctx) {
 		dumpsegv(info, reason, regs);
 	}
 	uint8_t *eip = (void *) regs[REG_EIP];
-	if (eip[0] == 0xfa || eip[0] == 0xfb) {
+	if (eip[0] == 0xfa || eip[0] == 0xfb || eip[0] == 0xec) {
 		fprintf(stderr, "CLI/STI %02x!\n", eip[0]);
 		regs[REG_EIP] += 1;
+		asm volatile("mov %0, %%gs" :: "a" (emulgs));
+		asm volatile("mov %0, %%fs" :: "a" (emulfs));
+		return;
+	}
+	if (eip[0] == 0x8e && eip[1] == 0x5d && eip[2] == 0x08) {
+		uint32_t *ebp = (void *) regs[REG_EBP];
+		uint32_t *esp = (void *) regs[REG_ESP];
+		fprintf(stderr, "MOV DS %08x %08x %08x %08x @%08x %08x→%08x\n", ebp[2], ebp[3], ebp[4], ebp[5], regs[REG_EIP], regs[REG_ESP], esp[4]);
+		*(uint8_t *) ebp[4] = 0;
+		fprintf(stderr, "=%08x\n", *(uint32_t *) ebp[4]);
+		regs[REG_EIP] += 15;
 		asm volatile("mov %0, %%gs" :: "a" (emulgs));
 		asm volatile("mov %0, %%fs" :: "a" (emulfs));
 		return;
