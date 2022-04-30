@@ -18,6 +18,7 @@ static void trace(char *format, ...) {
 	if (!dostrace)
 		return;
 
+	fprintf(dostrace, "  ");
 	va_list argp;
 	va_start(argp, format);
 	vfprintf(dostrace, format, argp);
@@ -117,6 +118,21 @@ static uint32_t dos_get_drive(void) {
 	return 0;
 }
 
+static uint32_t dos_devinfo(void) {
+	if (eax->l != 0)
+		dos_unimpl();
+
+	trace("GET DEVICE INFO\n");
+	// here we pretend that STDOUT isn't the console device. this has two effects:
+	// - XACT doesn't attempt to paginate its output, which on a Linux terminal is pointless and needs more APIs (and
+	//   makebits.exe even attempts to talk directly to the keyboard controller to paginate!?)
+	// - the MetaWare High C runtime library buffers output (theoretically saving syscalls, but it still calls DEVINFO
+	//   for every internal write)
+	edx->x = 0; // ordinary file
+	return 0;
+}
+
+
 static uint32_t dos_errno(char *syscall, char *pathname) {
 	if (errno == ENOENT)
 		return 2;
@@ -127,33 +143,6 @@ static uint32_t dos_errno(char *syscall, char *pathname) {
 	err(133, "%s %s failed", syscall, pathname); // symlink loop, or other *really bad* condition
 }
 
-static uint32_t dos_stat(char *pathname, uint8_t *attr, uint16_t *time, uint16_t *date, uint32_t *size) {
-	struct stat s;
-	int res = stat(pathname, &s);
-	if (res < 0)
-		return dos_errno("stat", pathname);
-
-	if (S_ISREG(s.st_mode))
-		*attr = 0x20; // regular file, with archive flag set
-	else if (S_ISDIR(s.st_mode))
-		*attr = 0x10; // directory, with archive flag clear because it isn't clear whether it would be set
-	else
-		*attr = 0x04; // something weird. say it's a system file; DOS programs tend to leave those alone
-	if (!(s.st_mode & S_IRUSR))
-		*attr |= 0x01; // set readonly flag if not owner-writable (assuming we're the owner)
-
-	if (size)
-		*size = s.st_size;
-	if (date || time) {
-		struct tm *mtime = localtime(&s.st_mtime);
-		if (time)
-			*time = (mtime->tm_hour << 11) | (mtime->tm_min << 5) | (mtime->tm_sec >> 1);
-		if (date)
-			*date = ((mtime->tm_year + 1900 - 1980) << 9) | ((mtime->tm_mon + 1) << 5) | mtime->tm_mday;
-	}
-	return 0;
-}
-
 // TODO we probably shouldn't just modify the string inplace?
 // then again: it works just fine, and sometimes we even get the already-transformed string...
 static void dos_to_unix(char *pathname) {
@@ -162,41 +151,57 @@ static void dos_to_unix(char *pathname) {
 			*ch = '/';
 }
 
-static uint32_t dos_getattr(void) {
-	if (eax->l != 0)
-		dos_unimpl();
-
-	trace("GETATTR %s\n", edx->ptr);
-	uint8_t attr;
-	int res = dos_stat(edx->ptr, &attr, NULL, NULL, NULL);
-	if (res) {
-		eax->ex = res;
-		return EFLAG_CARRY;
-	} else {
-		ecx->ex = attr;
-		return 0;
-	}
-}
-
 struct dta {
 	uint8_t internal[21];
 	uint8_t attrib;
 	uint16_t time;
 	uint16_t date;
 	uint32_t size;
-	uint8_t name[13];
+	char name[13];
 } __attribute__((packed));
 uint32_t dos_find_first(char *filename, struct dta *dta) {
+	trace("FIND FIRST %s %p\n", filename, dta);
 	if (index(filename, '*') || index(filename, '?')) {
 		trace(" pretending to find nothing for wildcards");
 		return 2;
 	}
 	dos_to_unix(filename);
 
-	int res = dos_stat(filename, &dta->attrib, &dta->time, &dta->date, &dta->size);
-	if (!res)
-		strcpy((char *) &dta[0x1e], "__dummy_.FIL");
-	return res;
+	struct stat s;
+	int res = stat(filename, &s);
+	if (res < 0)
+		return dos_errno("stat", filename);
+
+	if (S_ISREG(s.st_mode))
+		dta->attrib = 0x20; // regular file, with archive flag set
+	else if (S_ISDIR(s.st_mode))
+		dta->attrib = 0x10; // directory, with archive flag clear because it isn't clear whether it would be set
+	else
+		dta->attrib = 0x04; // something weird. say it's a system file; DOS programs tend to leave those alone
+	if (!(s.st_mode & S_IWUSR))
+		dta->attrib |= 0x01; // set readonly flag if not owner-writable (assuming we're the owner)
+
+	dta->size = s.st_size;
+	struct tm *mtime = localtime(&s.st_mtime);
+	dta->time = (mtime->tm_hour << 11) | (mtime->tm_min << 5) | (mtime->tm_sec >> 1);
+	dta->date = ((mtime->tm_year + 1900 - 1980) << 9) | ((mtime->tm_mon + 1) << 5) | mtime->tm_mday;
+	strcpy((char *) &dta->name, "__dummy_.FIL"); // flag value
+	return 0;
+}
+
+uint32_t dos_access(char *filename, uint32_t mode) {
+	dos_to_unix(filename);
+
+	struct stat s;
+	int res = stat(filename, &s);
+	if (res < 0)
+		return dos_errno("stat", filename);
+
+	if ((mode & 2) && (!(s.st_mode & S_IWUSR)))
+		// we want write, but even the owner cannot write the file. check for permission bit for consistency with
+		// find_first
+		return 13; // "data invalid" – apparently the right value for "nope, it's readonly"
+	return 0;
 }
 
 static uint32_t dos_open(int mode) {
@@ -228,14 +233,14 @@ static uint32_t dos_open_existing(void) {
 		errx(133, "invalid file mode %d for opening %s", eax->l, edx->ptr);
 	}
 	int res = dos_open(mode);
-	trace(" = %d\n", ebx->ex);
+	trace(" = %d\n", eax->ex);
 	return res;
 }
 
 static uint32_t dos_create(void) {
 	trace("CREATE %s %02x", edx->ptr, ecx->x);
 	int res = dos_open(O_WRONLY | O_CREAT | O_TRUNC); // TODO O_RDWR?
-	trace(" = %d\n", ebx->ex);
+	trace(" = %d\n", eax->ex);
 	return res;
 }
 
@@ -263,7 +268,7 @@ static uint32_t dos_unlink(void) {
 }
 
 static uint32_t dos_rename(void) {
-	trace("RENAME %s → %s\n", edx->ptr, edi->ptr);
+	trace("RENAME %s %s\n", edx->ptr, edi->ptr);
 	dos_to_unix(edx->ptr);
 	dos_to_unix(edi->ptr);
 	int res = rename(edx->ptr, edi->ptr);
@@ -281,7 +286,6 @@ static uint32_t dos_set_dta(void) {
 	return 0;
 }
 static uint32_t _dos_find_first(void) {
-	trace("FIND FIRST %s %p\n", edx->ptr, global_dta);
 	int res = dos_find_first(edx->ptr, global_dta);
 	if (res) {
 		eax->ex = res;
@@ -299,18 +303,20 @@ static uint32_t dos_get_psp(void) {
 	return 0;
 }
 
-static uint32_t dos_devinfo(void) {
+static uint32_t dos_getattr(void) {
 	if (eax->l != 0)
 		dos_unimpl();
 
-	trace("GET DEVICE INFO\n");
-	// here we pretend that STDOUT isn't the console device. this has two effects:
-	// - XACT doesn't attempt to paginate its output, which on a Linux terminal is pointless and needs more APIs (and
-	//   makebits.exe even attempts to talk directly to the keyboard controller to paginate!?)
-	// - the MetaWare High C runtime library buffers output (theoretically saving syscalls, but it still calls DEVINFO
-	//   for every internal write)
-	edx->x = 0; // ordinary file
-	return 0;
+	trace("GETATTR %s\n", edx->ptr);
+	struct dta temp_dta;
+	int res = dos_find_first(edx->ptr, &temp_dta);
+	if (res) {
+		eax->ex = res;
+		return EFLAG_CARRY;
+	} else {
+		ecx->ex = temp_dta.attrib;
+		return 0;
+	}
 }
 
 dosapi_handler dosapi[256] = {
@@ -320,6 +326,7 @@ dosapi_handler dosapi[256] = {
 	[0x30] = get_version,
 	[0x4c] = dos_exit,
 	[0x19] = dos_get_drive,
+	[0x44] = dos_devinfo,
 
 	// DOS 2.0+ file API
 	[0x3c] = dos_create,
@@ -328,7 +335,6 @@ dosapi_handler dosapi[256] = {
 	[0x3f] = dos_read,
 	[0x40] = dos_write,
 	[0x42] = dos_seek,
-	[0x43] = dos_getattr,
 	[0x47] = dos_getcwd,
 	[0x41] = dos_unlink,
 	[0x56] = dos_rename,
@@ -337,5 +343,5 @@ dosapi_handler dosapi[256] = {
 	[0x1a] = dos_set_dta,
 	[0x4e] = _dos_find_first,
 	[0x62] = dos_get_psp,
-	[0x44] = dos_devinfo,
+	[0x43] = dos_getattr,
 };

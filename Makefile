@@ -9,6 +9,6 @@ all: $(TARGETS)
 clean:
 	rm -f *.o *~ $(TARGETS)
 
-xrun: xrun.o dosemu.o exeloader.o mwhcinit.o dosapi.o binpatch.o
+xrun: xrun.o dosemu.o exeloader.o dosapi.o binpatch.o
 
 .PHONY: all clean

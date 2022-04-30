@@ -29,6 +29,7 @@ extern uint32_t *eflags;
 extern FILE *dostrace;
 struct dta;
 uint32_t dos_find_first(char *filename, struct dta *dta);
+uint32_t dos_access(char *filename, uint32_t mode);
 void dos_unimpl(void);
 typedef uint32_t (*dosapi_handler)(void);
 extern dosapi_handler dosapi[256];
