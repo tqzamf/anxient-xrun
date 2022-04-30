@@ -9,68 +9,61 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <string.h>
+#include <stdarg.h>
 
 #include "xrun.h"
 
-static void get_int_handler(struct regs *r) {
-	fprintf(dostrace, "GET INT %02x", r->cl);
-	r->ebx = 0x99999900 + r->cl;
-	r->carry = 0;
+FILE *dostrace;
+static void trace(char *format, ...) {
+	if (!dostrace)
+		return;
+
+	va_list argp;
+	va_start(argp, format);
+	vfprintf(dostrace, format, argp);
+	va_end(argp);
 }
 
-static void set_int_handler(struct regs *r) {
-	fprintf(dostrace, "SET INT %02x = %p", r->cl, r->edx);
-	r->carry = 0;
-}
-
-static void get_ctrl_break(struct regs *r) {
-	fprintf(dostrace, "GET Ctrl-Break");
-	r->dl = 0;
-}
-
-static void set_ctrl_break(struct regs *r) {
-	fprintf(dostrace, "SET Ctrl-Break = %d", r->dl);
-}
-
-static void get_date(struct regs *r) {
-	fprintf(dostrace, "GET DATE");
+static uint32_t get_date(void) {
+	trace("GET DATE\n");
 	struct timeval t;
 	gettimeofday(&t, NULL);
 	struct tm *now = localtime(&t.tv_sec);
-	r->cx = now->tm_year + 1900;
-	r->dh = now->tm_mon + 1;
-	r->dl = now->tm_mday;
-	r->al = now->tm_wday;
+	ecx->x = now->tm_year + 1900;
+	edx->h = now->tm_mon + 1;
+	edx->l = now->tm_mday;
+	eax->l = now->tm_wday;
+	return 0;
 }
 
-static void get_time(struct regs *r) {
-	fprintf(dostrace, "GET TIME");
+static uint32_t get_time(void) {
+	trace("GET TIME\n");
 	struct timeval t;
 	gettimeofday(&t, NULL);
 	struct tm *now = localtime(&t.tv_sec);
-	r->ch = now->tm_hour;
-	r->cl = now->tm_min;
-	r->dh = now->tm_sec;
-	r->dl = t.tv_usec / 10000;
+	ecx->h = now->tm_hour;
+	ecx->l = now->tm_min;
+	edx->h = now->tm_sec;
+	edx->l = t.tv_usec / 10000;
+	return 0;
 }
 
-static void get_version(struct regs *r) {
-	r->al = 3;
-	r->ah = 0;
-	r->bl = 0;
-	r->bh = 0;
-	r->cx = 0;
+static uint32_t get_version(void) {
+	eax->l = 3;
+	eax->h = 0;
+	ebx->l = 0;
+	ebx->h = 0;
+	ecx->x = 0;
+	return 0;
 }
 
-static void dos_exit(struct regs *r) {
-	fprintf(dostrace, "EXIT %d\n", r->al);
-	exit(r->al);
+static uint32_t dos_exit(void) {
+	trace("EXIT %d\n", eax->l);
+	exit(eax->l);
 }
 
-static void dos_getkey(struct regs *r) {
-	fprintf(dostrace, "GETKEY");
-	// TODO implement properly? only used for paging, and that isn't necessary on Linux
-	r->al = ' ';
+void dos_unimpl(void) {
+	errx(133, "unsupported DOS call: INT 21 AH=%02x AL=%02x", eax->h, eax->l);
 }
 
 // filing functions. DOS 2+ (non-FCB) FS API is very, very close to UNIX FS API. and XACT does very little to its
@@ -80,69 +73,51 @@ static void dos_getkey(struct regs *r) {
 // low limit on open files. it does, however, mean that we should return 32 bits of file descriptor in ebx, but
 // only look at the low 8 bits in bl when using them.
 
-uint8_t *dta;
-
-static void dos_set_dta(struct regs *r) {
-	fprintf(dostrace, "DTA = %p", r->edx);
-	dta = r->edx;
-}
-
-static void dos_read(struct regs *r) {
-	fprintf(dostrace, "READ %d %d", r->bl, r->ecx);
-	int len = read(r->bl, r->edx, r->ecx);
+static uint32_t dos_read(void) {
+	trace("READ %d %d\n", ebx->l, ecx->ex);
+	int len = read(ebx->l, edx->ptr, ecx->ex);
 	if (len < 0)
 		err(133, "read failed");
-	r->carry = 0;
-	r->eax = len;
+	eax->ex = len;
+	return 0;
 }
 
-static void dos_write(struct regs *r) {
-	fprintf(dostrace, "WRITE %d %d", r->bl, r->ecx);
-	if (r->ecx == 0)
+static uint32_t dos_write(void) {
+	trace("WRITE %d %d\n", ebx->l, ecx->ex);
+	if (ecx->ex == 0)
 		// TODO implement? probably only ever used to actually emulate ftruncate(), if at all
-		errx(128, "truncate not implemented");
-	int len = write(r->bl, r->edx, r->ecx);
+		errx(133, "truncate not implemented");
+	int len = write(ebx->l, edx->ptr, ecx->ex);
 	if (len < 0)
 		err(133, "write failed");
-	r->carry = 0;
-	r->eax = len;
+	eax->ex = len;
+	return 0;
 }
 
-static void dos_seek(struct regs *r) {
+static uint32_t dos_seek(void) {
 	// as silly as it looks, this really does seem to represent offsets as CX:DX, instead of simply using EDX like
 	// sensible people. 64-bit pointers apparently don't look that nice if the underlying API cannot use them anyway?
-	off_t pos = (r->cx << 16) | r->dx;
+	off_t pos = (ecx->x << 16) | edx->x;
 	// the "whence" values match. man lseek doesn't document them, but they're so traditional that even Python (!)
 	// documents their numerical values...
 	char *whence[] = { "SET", "CUR", "END" };
-	fprintf(dostrace, "SEEK %d %s %d", r->bl, whence[r->al], (uint32_t) pos);
-	off_t res = lseek(r->bl, pos, r->al);
+	trace("SEEK %d %s %d", ebx->l, whence[eax->l], (uint32_t) pos);
+	off_t res = lseek(ebx->l, pos, eax->l);
 	if (res == (off_t) -1)
 		err(133, "lseek failed");
-	fprintf(dostrace, " = %d", (uint32_t) res);
-	r->eax = res & 0xffff;
-	r->edx = (void *) ((res >> 16) & 0xffff);
-	r->carry = 0;
+	trace(" = %d\n", (uint32_t) res);
+	eax->ex = res & 0xffff;
+	edx->ex = (res >> 16) & 0xffff;
+	return 0;
 }
 
-static void dos_devinfo(struct regs *r) {
-	fprintf(dostrace, "DEVINFO %d", r->ebx);
-	// here we pretend that STDOUT isn't the console device. this has two effects:
-	// - XACT doesn't attempt to paginate its output, which on a Linux terminal is pointless and needs more APIs (and
-	//   makebits.exe even attempts to talk directly to the keyboard controller to paginate!?)
-	// - the MetaWare High C runtime library buffers output (theoretically saving syscalls, but it still calls DEVINFO
-	//   for every internal write)
-	r->dx = 0; // ordinary file
-	r->carry = 0;
+static uint32_t dos_get_drive(void) {
+	trace("GET DRIVE\n");
+	eax->l = 0;
+	return 0;
 }
 
-static void dos_get_drive(struct regs *r) {
-	fprintf(dostrace, "GET DRIVE");
-	// TODO emulate correctly?
-	r->al = 0;
-}
-
-static int dos_errno(char *syscall, char *pathname) {
+static uint32_t dos_errno(char *syscall, char *pathname) {
 	if (errno == ENOENT)
 		return 2;
 	if (errno == ENOTDIR)
@@ -152,7 +127,7 @@ static int dos_errno(char *syscall, char *pathname) {
 	err(133, "%s %s failed", syscall, pathname); // symlink loop, or other *really bad* condition
 }
 
-static int dos_stat(void *pathname, uint8_t *attr, uint16_t *time, uint16_t *date, uint32_t *size) {
+static uint32_t dos_stat(char *pathname, uint8_t *attr, uint16_t *time, uint16_t *date, uint32_t *size) {
 	struct stat s;
 	int res = stat(pathname, &s);
 	if (res < 0)
@@ -179,7 +154,7 @@ static int dos_stat(void *pathname, uint8_t *attr, uint16_t *time, uint16_t *dat
 	return 0;
 }
 
-// TODO we probably shouldn't jsut modify the string inplace?
+// TODO we probably shouldn't just modify the string inplace?
 // then again: it works just fine, and sometimes we even get the already-transformed string...
 static void dos_to_unix(char *pathname) {
 	for (char *ch = pathname; *ch; ch++)
@@ -187,52 +162,59 @@ static void dos_to_unix(char *pathname) {
 			*ch = '/';
 }
 
-static void dos_getattr(struct regs *r) {
-	fprintf(dostrace, "GETATTR %s", (char *) r->edx);
+static uint32_t dos_getattr(void) {
+	if (eax->l != 0)
+		dos_unimpl();
+
+	trace("GETATTR %s\n", edx->ptr);
 	uint8_t attr;
-	int res = dos_stat(r->edx, &attr, NULL, NULL, NULL);
+	int res = dos_stat(edx->ptr, &attr, NULL, NULL, NULL);
 	if (res) {
-		r->eax = res;
-		r->carry = 1;
+		eax->ex = res;
+		return EFLAG_CARRY;
 	} else {
-		r->ecx = attr;
-		r->carry = 0;
+		ecx->ex = attr;
+		return 0;
 	}
 }
 
-static void dos_find_first(struct regs *r) {
-	fprintf(dostrace, "FIND FIRST %s", (char *) r->edx);
-	if (index(r->edx, '*') || index(r->edx, '?'))
-		// TODO implement? probably not used, though
-		errx(133, "FIND FIRST placeholders not implemented");
-	dos_to_unix(r->edx);
+struct dta {
+	uint8_t internal[21];
+	uint8_t attrib;
+	uint16_t time;
+	uint16_t date;
+	uint32_t size;
+	uint8_t name[13];
+} __attribute__((packed));
+uint32_t dos_find_first(char *filename, struct dta *dta) {
+	if (index(filename, '*') || index(filename, '?')) {
+		trace(" pretending to find nothing for wildcards");
+		return 2;
+	}
+	dos_to_unix(filename);
 
-	int res = dos_stat(r->edx, &dta[0x15], (uint16_t *) &dta[0x16], (uint16_t *) &dta[0x18], (uint32_t *) &dta[0x1a]);
-	if (res) {
-		r->eax = res;
-		r->carry = 1;
-	} else {
+	int res = dos_stat(filename, &dta->attrib, &dta->time, &dta->date, &dta->size);
+	if (!res)
 		strcpy((char *) &dta[0x1e], "__dummy_.FIL");
-		r->carry = 0;
-	}
+	return res;
 }
 
-static void dos_open(struct regs *r, int mode) {
-	dos_to_unix(r->edx);
-	int res = open(r->edx, mode, 0777);
+static uint32_t dos_open(int mode) {
+	dos_to_unix(edx->ptr);
+	int res = open(edx->ptr, mode, 0777);
 	if (res < 0) {
-		r->eax = dos_errno("open", r->edx);
-		r->carry = 1;
+		eax->ex = dos_errno("open", edx->ptr);
+		return EFLAG_CARRY;
 	} else {
-		r->eax = res;
-		r->carry = 0;
+		eax->ex = res;
+		return 0;
 	}
 }
 
-static void dos_open_existing(struct regs *r) {
-	fprintf(dostrace, "OPEN %s %d", (char *) r->edx, r->al);
+static uint32_t dos_open_existing(void) {
+	trace("OPEN %s %d", edx->ptr, eax->l);
 	int mode;
-	switch (r->al & 7) {
+	switch (eax->l & 7) {
 	case 0:
 		mode = O_RDONLY;
 		break;
@@ -243,66 +225,117 @@ static void dos_open_existing(struct regs *r) {
 		mode = O_RDWR;
 		break;
 	default:
-		errx(133, "invalid file mode %d for opening %s", r->al, (char *) r->edx);
+		errx(133, "invalid file mode %d for opening %s", eax->l, edx->ptr);
 	}
-	dos_open(r, mode);
-	fprintf(dostrace, " = %d", r->ebx);
+	int res = dos_open(mode);
+	trace(" = %d\n", ebx->ex);
+	return res;
 }
 
-static void dos_create(struct regs *r) {
-	fprintf(dostrace, "CREATE %s %02x", (char *) r->edx, r->cx);
-	dos_open(r, O_WRONLY | O_CREAT | O_TRUNC); // TODO O_RDWR?
-	fprintf(dostrace, " = %d", r->ebx);
+static uint32_t dos_create(void) {
+	trace("CREATE %s %02x", edx->ptr, ecx->x);
+	int res = dos_open(O_WRONLY | O_CREAT | O_TRUNC); // TODO O_RDWR?
+	trace(" = %d\n", ebx->ex);
+	return res;
 }
 
-static void dos_close(struct regs *r) {
-	fprintf(dostrace, "CLOSE %d", r->ebx);
-	close(r->bl);
-	r->carry = 0;
+static uint32_t dos_close(void) {
+	trace("CLOSE %d\n", ebx->l);
+	close(ebx->l);
+	return 0;
 }
 
-static void dos_getcwd(struct regs *r) {
-	fprintf(dostrace, "GETCWD %d", r->dl);
-	strcpy(r->esi, "\\nowhere");
-	r->carry = 0;
+static uint32_t dos_getcwd(void) {
+	trace("GETCWD %d\n", edx->l);
+	strcpy(esi->ptr, "\\nowhere");
+	return 0;
 }
 
-static void dos_unlink(struct regs *r) {
-	fprintf(dostrace, "UNLINK %s", (char *) r->edx);
-	dos_to_unix(r->edx);
-	int res = unlink((char *) r->edx);
+static uint32_t dos_unlink(void) {
+	trace("UNLINK %s\n", edx->ptr);
+	dos_to_unix(edx->ptr);
+	int res = unlink(edx->ptr);
 	if (res < 0) {
-		r->eax = dos_errno("unlink", r->edx);
-		r->carry = 1;
+		eax->ex = dos_errno("unlink", edx->ptr);
+		return EFLAG_CARRY;
 	} else
-		r->carry = 0;
+		return 0;
 }
 
-dosapi_handler dosapi[65536] = {
-	[0x2502] = get_int_handler,
-	[0x2503] = get_int_handler,
-	[0x2504] = set_int_handler,
-	[0x2505] = set_int_handler,
-	[0x2506] = set_int_handler,
-	[0x3300] = get_ctrl_break,
-	[0x3301] = set_ctrl_break,
+static uint32_t dos_rename(void) {
+	trace("RENAME %s → %s\n", edx->ptr, edi->ptr);
+	dos_to_unix(edx->ptr);
+	dos_to_unix(edi->ptr);
+	int res = rename(edx->ptr, edi->ptr);
+	if (res < 0) {
+		eax->ex = dos_errno("rename", edx->ptr);
+		return EFLAG_CARRY;
+	} else
+		return 0;
+}
+
+static struct dta *global_dta;
+static uint32_t dos_set_dta(void) {
+	trace("DTA = %p\n", edx->ptr);
+	global_dta = (void *) edx->ptr;
+	return 0;
+}
+static uint32_t _dos_find_first(void) {
+	trace("FIND FIRST %s %p\n", edx->ptr, global_dta);
+	int res = dos_find_first(edx->ptr, global_dta);
+	if (res) {
+		eax->ex = res;
+		return EFLAG_CARRY;
+	} else
+		return 0;
+}
+
+static uint32_t dos_get_psp(void) {
+	trace("GET PSP\n");
+	// only used as a (bad) RNG to name the MRGxxxxx temp file, so make it (badly) random:
+	struct timeval t;
+	gettimeofday(&t, NULL);
+	ebx->ex = t.tv_usec;
+	return 0;
+}
+
+static uint32_t dos_devinfo(void) {
+	if (eax->l != 0)
+		dos_unimpl();
+
+	trace("GET DEVICE INFO\n");
+	// here we pretend that STDOUT isn't the console device. this has two effects:
+	// - XACT doesn't attempt to paginate its output, which on a Linux terminal is pointless and needs more APIs (and
+	//   makebits.exe even attempts to talk directly to the keyboard controller to paginate!?)
+	// - the MetaWare High C runtime library buffers output (theoretically saving syscalls, but it still calls DEVINFO
+	//   for every internal write)
+	edx->x = 0; // ordinary file
+	return 0;
+}
+
+dosapi_handler dosapi[256] = {
+	// general API
 	[0x2a] = get_date,
 	[0x2c] = get_time,
 	[0x30] = get_version,
 	[0x4c] = dos_exit,
-	//[0x07] = dos_getkey,
-
 	[0x19] = dos_get_drive,
-	[0x1a] = dos_set_dta,
+
+	// DOS 2.0+ file API
 	[0x3c] = dos_create,
 	[0x3d] = dos_open_existing,
 	[0x3e] = dos_close,
 	[0x3f] = dos_read,
 	[0x40] = dos_write,
 	[0x42] = dos_seek,
-	[0x4300] = dos_getattr,
-	[0x4400] = dos_devinfo,
-	[0x4e] = dos_find_first,
+	[0x43] = dos_getattr,
 	[0x47] = dos_getcwd,
 	[0x41] = dos_unlink,
+	[0x56] = dos_rename,
+
+	// stuff that should never be called via the API table because it is inlined directly
+	[0x1a] = dos_set_dta,
+	[0x4e] = _dos_find_first,
+	[0x62] = dos_get_psp,
+	[0x44] = dos_devinfo,
 };

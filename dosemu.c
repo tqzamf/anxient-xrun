@@ -10,8 +10,6 @@
 
 #include "xrun.h"
 
-FILE *dostrace;
-
 static void dumpregs(volatile greg_t *regs) {
 	fprintf(stderr, " at EIP=%08x ESP=%08x EBP=%08x *ESP=%08x\n", regs[REG_EIP], regs[REG_ESP], regs[REG_EBP],
 			regs[REG_ESP] != 0 ? *(uint32_t *) regs[REG_ESP] : 0);
@@ -32,7 +30,6 @@ static void dumpsegv(siginfo_t *info, char *reason, volatile greg_t *regs) {
 
 #define TRAPNO_GPF 13
 #define TRAPERR_INT 266
-#define EFLAG_CARRY 1
 
 uint16_t realgs, realfs;
 
@@ -85,36 +82,27 @@ static void trapsegv(int sig, siginfo_t *info, void *ctx) {
 	if (eip[0] != 0xcd || eip[1] != 0x21)
 		dumpsegv(info, "unexpected interrupt", regs);
 
-	struct regs reg = {
-		.eax = regs[REG_EAX],
-		.ebx = regs[REG_EBX],
-		.ecx = regs[REG_ECX],
-		.edx = (void *) regs[REG_EDX],
-		.esi = (void *) regs[REG_ESI],
-		.carry = regs[REG_EFL] & EFLAG_CARRY,
-	};
-	// AH and AX calls can share a single table, as long as there are no AX=0x00?? calls. and there aren't; AH=0x00
-	// is (old-style) "terminate program"
-	dosapi_handler handler = dosapi[reg.ah];
-	if (handler == NULL) {
-		handler = dosapi[reg.ax];
-		if (handler == NULL) {
-			fprintf(stderr, "unsupported DOS CALL INT 21 AH=%02x AL=%02x @%08x!\n", reg.ah, reg.al, regs[REG_EIP]);
-			dumpregs(regs);
-			exit(128);
-		}
-		fprintf(dostrace, "INT 21 AX=%04x @%08x ", reg.ax, regs[REG_EIP]);
-	} else
-		fprintf(dostrace, "INT 21 AH=%02x   @%08x ", reg.ah, regs[REG_EIP]);
-	handler(&reg);
-	fprintf(dostrace, "\n");
+	fprintf(dostrace, "INT 21 @%08x EAX=%04x EBX=%08x ECX=%08x EDX=%08x ESI=%08x EDI=%08x\n", regs[REG_EIP], eax->ex,
+			ebx->ex, ecx->ex, edx->ex, esi->ex, edi->ex);
 	fflush(dostrace);
-	regs[REG_EAX] = reg.eax;
-	regs[REG_EBX] = reg.ebx;
-	regs[REG_ECX] = reg.ecx;
-	regs[REG_EDX] = (uint32_t) reg.edx;
-	regs[REG_ESI] = (uint32_t) reg.esi;
-	regs[REG_EFL] = (regs[REG_EFL] & ~EFLAG_CARRY) | (reg.carry ? EFLAG_CARRY : 0);
+	eax->ex = regs[REG_EAX],
+	ebx->ex = regs[REG_EBX],
+	ecx->ex = regs[REG_ECX],
+	edx->ex = regs[REG_EDX],
+	esi->ex = regs[REG_ESI],
+	edi->ex = regs[REG_EDI],
+	*eflags = regs[REG_EFL] & (EFLAG_CARRY | EFLAG_ZERO);
+	dosapi_handler handler = dosapi[eax->h];
+	if (handler == NULL)
+		dos_unimpl();
+	handler();
+	regs[REG_EAX] = eax->ex;
+	regs[REG_EBX] = ebx->ex;
+	regs[REG_ECX] = ecx->ex;
+	regs[REG_EDX] = edx->ex;
+	regs[REG_ESI] = esi->ex;
+	regs[REG_EDI] = edi->ex;
+	regs[REG_EFL] = (regs[REG_EFL] & ~(EFLAG_CARRY | EFLAG_ZERO)) | *eflags;
 
 	regs[REG_EIP] += 2; // skip the int 0x21 instruction
 	asm volatile("mov %0, %%gs" :: "a" (emulgs));
@@ -152,8 +140,8 @@ static void sighandler(int sig, void (*handler)(int, siginfo_t *, void *)) {
 		err(129, "failed to install signal handler for signal %d", sig);
 }
 
-void dosemu_init(void) {
-	dostrace = fopen(".xrun.log", "w");
+void dosemu_init(char *tracefile) {
+	dostrace = fopen(tracefile, "w");
 	asm("mov %%gs, %0" : "=a" (realgs) :);
 	asm("mov %%fs, %0" : "=a" (realfs) :);
 

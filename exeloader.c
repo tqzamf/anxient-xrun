@@ -191,4 +191,8 @@ void load_exe(char *filename, uint32_t heapsize, uint32_t *eip, uint32_t *esp, u
 	*loadbase = exp.base;
 	*loadlimit = exp.base + exp.memsize;
 	*heaplimit = exp.base + mapsize;
+	if (dostrace) {
+		fprintf(dostrace, "loaded %s at %08x .. %08x, heap to %08x\n", filename, *loadbase, *loadlimit, *heaplimit);
+		fprintf(dostrace, "initial EIP=%08x, ESP=%08x stacksize=%08x\n", *eip, *esp, *stacksize);
+	}
 }

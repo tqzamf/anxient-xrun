@@ -164,13 +164,13 @@ void init_mwhc(uint8_t *ep, uint32_t heapsize, uint32_t esp, uint32_t stacksize,
 	*argp_seg = *_psp_seg = *envp_seg = *prognamep_seg = ds;
 
 #define PTR(name) \
-	fprintf(dostrace, "%20s @%08x\n", #name, (uint32_t) name)
+	if (dostrace) fprintf(dostrace, "%20s @%08x\n", #name, (uint32_t) name)
 #define VAL32(name) \
-	fprintf(dostrace, "%20s @%08x = %08x\n", #name, (uint32_t) name, *(uint32_t *) name)
+	if (dostrace) fprintf(dostrace, "%20s @%08x = %08x\n", #name, (uint32_t) name, *(uint32_t *) name)
 #define VAL16(name) \
-	fprintf(dostrace, "%20s @%08x = %04x\n", #name, (uint32_t) name, *(uint16_t *) name)
+	if (dostrace) fprintf(dostrace, "%20s @%08x = %04x\n", #name, (uint32_t) name, *(uint16_t *) name)
 #define VAL8(name) \
-	fprintf(dostrace, "%20s @%08x = %02x\n", #name, (uint32_t) name, *(uint8_t *) name)
+	if (dostrace) fprintf(dostrace, "%20s @%08x = %02x\n", #name, (uint32_t) name, *(uint8_t *) name)
 
 	PTR(__main); PTR(finitfunc_unknown); VAL8(initfunc_retn); PTR(initfunc_unknown); PTR(set_up_args);
 	VAL8(env); VAL32(_gda); VAL8(lahey_format_file);
@@ -190,10 +190,10 @@ void init_mwhc(uint8_t *ep, uint32_t heapsize, uint32_t esp, uint32_t stacksize,
 	VAL16(fpu_need80387); PTR(fpu_need80387_str1); PTR(fpu_need80387_str2);
 
 	// these init functions technically run with the wrong stack. they don't seem to care.
-	fprintf(dostrace, "call initfunc @%p\n", initfunc_unknown);
+	if (dostrace) fprintf(dostrace, "call initfunc @%p\n", initfunc_unknown);
 	((void (*)(void)) initfunc_unknown)();
 	for (void **initfunc = _mwinitfrstcall; initfunc < _mwinitlastcall; initfunc++) {
-		fprintf(dostrace, "call initfunc @%p\n", *initfunc);
+		if (dostrace) fprintf(dostrace, "call initfunc @%p\n", *initfunc);
 		uint16_t realgs;
 		asm("mov %%gs, %0" : "=a" (realgs));
 		((void (*)(void)) *initfunc)();
@@ -221,7 +221,8 @@ void init_mwhc(uint8_t *ep, uint32_t heapsize, uint32_t esp, uint32_t stacksize,
 	ctx.uc_stack.ss_flags = 0;
 	ctx.uc_stack.ss_size = stacksize;
 	ctx.uc_stack.ss_sp = sp;
-	fprintf(dostrace, "call __main @%08x, ESP=%08x EBP=%08x\n", regs[REG_EIP], regs[REG_ESP], regs[REG_EBP]);
+	if (dostrace)
+		fprintf(dostrace, "call __main @%08x, ESP=%08x EBP=%08x\n", regs[REG_EIP], regs[REG_ESP], regs[REG_EBP]);
 	setcontext(&ctx);
 	errx(1, "failed to call __main\n");
 };
