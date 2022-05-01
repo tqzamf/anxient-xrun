@@ -133,7 +133,7 @@ static uint32_t dos_devinfo(void) {
 }
 
 
-static uint32_t dos_errno(char *syscall, char *pathname) {
+static uint32_t dos_map_errno(char *syscall, char *pathname) {
 	if (errno == ENOENT)
 		return 2;
 	if (errno == ENOTDIR)
@@ -169,8 +169,9 @@ uint32_t dos_find_first(char *filename, struct dta *dta) {
 
 	struct stat s;
 	int res = stat(filename, &s);
-	if (res < 0)
-		return dos_errno("stat", filename);
+	if (res < 0) {
+		return dos_set_errno(dos_map_errno("stat", filename));
+	}
 
 	if (S_ISREG(s.st_mode))
 		dta->attrib = 0x20; // regular file, with archive flag set
@@ -194,8 +195,10 @@ uint32_t dos_access(char *filename, uint32_t mode) {
 
 	struct stat s;
 	int res = stat(filename, &s);
-	if (res < 0)
-		return dos_errno("stat", filename);
+	if (res < 0) {
+		dos_set_errno(dos_map_errno("stat", filename));
+		return -1;
+	}
 
 	if ((mode & 2) && (!(s.st_mode & S_IWUSR)))
 		// we want write, but even the owner cannot write the file. check for permission bit for consistency with
@@ -204,11 +207,16 @@ uint32_t dos_access(char *filename, uint32_t mode) {
 	return 0;
 }
 
+char *dos_getcwd(char *buffer, uint32_t size) {
+	strcpy(buffer, "a:\\__dummy__");
+	return buffer;
+}
+
 static uint32_t dos_open(int mode) {
 	dos_to_unix(edx->ptr);
 	int res = open(edx->ptr, mode, 0777);
 	if (res < 0) {
-		eax->ex = dos_errno("open", edx->ptr);
+		eax->ex = dos_map_errno("open", edx->ptr);
 		return EFLAG_CARRY;
 	} else {
 		eax->ex = res;
@@ -250,9 +258,9 @@ static uint32_t dos_close(void) {
 	return 0;
 }
 
-static uint32_t dos_getcwd(void) {
+static uint32_t _dos_getcwd(void) {
 	trace("GETCWD %d\n", edx->l);
-	strcpy(esi->ptr, "\\nowhere");
+	strcpy(esi->ptr, "__dummy__");
 	return 0;
 }
 
@@ -261,7 +269,7 @@ static uint32_t dos_unlink(void) {
 	dos_to_unix(edx->ptr);
 	int res = unlink(edx->ptr);
 	if (res < 0) {
-		eax->ex = dos_errno("unlink", edx->ptr);
+		eax->ex = dos_map_errno("unlink", edx->ptr);
 		return EFLAG_CARRY;
 	} else
 		return 0;
@@ -273,14 +281,14 @@ static uint32_t dos_rename(void) {
 	dos_to_unix(edi->ptr);
 	int res = rename(edx->ptr, edi->ptr);
 	if (res < 0) {
-		eax->ex = dos_errno("rename", edx->ptr);
+		eax->ex = dos_map_errno("rename", edx->ptr);
 		return EFLAG_CARRY;
 	} else
 		return 0;
 }
 
 static struct dta *global_dta;
-static uint32_t dos_set_dta(void) {
+static uint32_t _dos_set_dta(void) {
 	trace("DTA = %p\n", edx->ptr);
 	global_dta = (void *) edx->ptr;
 	return 0;
@@ -294,7 +302,7 @@ static uint32_t _dos_find_first(void) {
 		return 0;
 }
 
-static uint32_t dos_get_psp(void) {
+static uint32_t _dos_get_psp(void) {
 	trace("GET PSP\n");
 	// only used as a (bad) RNG to name the MRGxxxxx temp file, so make it (badly) random:
 	struct timeval t;
@@ -303,7 +311,7 @@ static uint32_t dos_get_psp(void) {
 	return 0;
 }
 
-static uint32_t dos_getattr(void) {
+static uint32_t _dos_getattr(void) {
 	if (eax->l != 0)
 		dos_unimpl();
 
@@ -335,13 +343,20 @@ dosapi_handler dosapi[256] = {
 	[0x3f] = dos_read,
 	[0x40] = dos_write,
 	[0x42] = dos_seek,
-	[0x47] = dos_getcwd,
 	[0x41] = dos_unlink,
 	[0x56] = dos_rename,
 
 	// stuff that should never be called via the API table because it is inlined directly
-	[0x1a] = dos_set_dta,
+	[0x1a] = _dos_set_dta,
 	[0x4e] = _dos_find_first,
-	[0x62] = dos_get_psp,
-	[0x43] = dos_getattr,
+	[0x47] = _dos_getcwd,
+	[0x62] = _dos_get_psp,
+	[0x43] = _dos_getattr,
 };
+
+uint32_t dos_call(void) {
+	dosapi_handler handler = dosapi[eax->h];
+	if (handler == 0)
+		dos_unimpl();
+	return *eflags = handler();
+}

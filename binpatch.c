@@ -5,6 +5,7 @@
 #include <err.h>
 
 #include "xrun.h"
+#include "binpatch.h"
 
 static uint32_t crc32_table[256];
 
@@ -33,62 +34,85 @@ static uint32_t crc32(const char *buf, size_t size) {
 	return ~crc;
 }
 
-void binpatch(char *base, size_t length, bin_patch *patches) {
-	for (bin_patch *patch = patches; patch->name; patch++) {
-		char *loc = memmem(base, length, patch->match, patch->matchlen);
-		if (!loc) {
-			if (patch->required)
-				errx(131, "no match for patch %s", patch->name);
-			continue;
-		}
-		loc -= patch->matchpos;
+int binpatch(char *base, size_t length, bin_patch *patch) {
+	char *loc = memmem(base, length, patch->match, patch->matchlen);
+	if (!loc) {
 		if (dostrace)
-			fprintf(dostrace, "applying patch %s at %p\n", patch->name, loc);
-
-		// detect embedded address constants and replace them with flag values that are really obvious to spot in a
-		// SIGSEGV trace. this helps if the supposedly "unreachable" code is reached, and also makes the CRC independent
-		// of the address immediates in the code.
-		if (patch->detect)
-			for (detect_addr *addr = patch->detect; addr->name; addr++) {
-				void *a = 0;
-				for (int i = 0; addr->offsets[i] != (uint16_t) -1; i++) {
-					uint16_t offset = addr->offsets[i];
-					void **aptr = (void **) &loc[offset];
-					if (i == 0)
-						a = *aptr;
-					else if (a != *aptr)
-						errx(131, "incorrect address at offset 0x%03x: %p expecting %p", offset, *aptr, a);
-					*aptr = (void *) 0xa5000000;
-				}
-				if (addr->bias != (uint16_t) -1)
-					a += (uint32_t) loc + addr->bias;
-
-				if (addr->target && *addr->target && *addr->target != a)
-					errx(131, "incorrect address: %p expecting %p", a, *addr->target);
-				if (dostrace)
-					fprintf(dostrace, "  detected %s = %p\n", addr->name, a);
-				if (addr->target)
-					*addr->target = a;
-			}
-
-		// check that CRC matches, so we don't patch a spurious match and corrupt the program
-		uint32_t crc = crc32(loc, patch->crclen);
-		if (crc != patch->crc)
-			errx(131, "spurious match for patch %s at %p: CRC %08x expect %08x", patch->name, loc, crc, patch->crc);
-		memcpy(loc, patch->replacement, patch->replen);
-
-		// patch in required addresses
-		if (patch->patch)
-			for (patch_addr *addr = patch->patch; addr->name; addr++) {
-				uint32_t *value = addr->addr ? addr->addr : *addr->value;
-				if (dostrace)
-					fprintf(dostrace, "  patching %s = %p\n", addr->name, value);
-				*(uint32_t **) &loc[addr->offset] = value;
-			}
-
-		size_t offset = loc - base;
-		loc = memmem(loc + patch->crclen, length - offset - patch->crclen, patch->match, patch->matchlen);
-		if (loc)
-			errx(131, "ambiguous match for patch %s at %p", patch->name, loc);
+			fprintf(dostrace, "skipping patch %s\n", patch->name);
+		return 0;
 	}
+	loc -= patch->matchpos;
+	if (dostrace)
+		fprintf(dostrace, "applying patch %s at %p\n", patch->name, loc);
+
+	// detect embedded address constants and replace them with flag values that are really obvious to spot in a
+	// SIGSEGV trace. this helps if the supposedly "unreachable" code is reached, and also makes the CRC independent
+	// of the address immediates in the code.
+	for (binpatch_detect *addr = patch->detect; addr->name; addr++) {
+		void *target = 0;
+		for (int i = 0; addr->offsets[i] > 0; i++) {
+			uint16_t offset = addr->offsets[i];
+			void **aptr = (void **) &loc[offset];
+			void *current = addr->bias >= 0 ? *aptr + (uint32_t) aptr + addr->bias : *aptr;
+			if (i == 0)
+				target = current;
+			else if (target != current)
+				errx(131,
+						"failed to apply patch %s at %p, inconsistent address for %s at offset 0x%03x: %p expecting %p",
+						patch->name, loc, addr->name, offset, current, target);
+			*aptr = (void *) 0xa5000000;
+		}
+
+		if (addr->target && *addr->target && *addr->target != target)
+			errx(131, "failed to apply patch %s at %p, inconsistent address for %s: %p expecting %p",
+					patch->name, loc, addr->name, target, *addr->target);
+		if (dostrace)
+			fprintf(dostrace, "  detected %s = %p\n", addr->name, target);
+		if (addr->target)
+			*addr->target = target;
+	}
+
+	// check that CRC matches, so we don't patch a spurious match and corrupt the program
+	uint32_t crc = crc32(loc, patch->crclen);
+	if (crc != patch->crc)
+		errx(131, "spurious match for patch %s at %p: CRC %08x expect %08x", patch->name, loc, crc, patch->crc);
+
+	// replace by defined code
+	int pos = 0;
+	binpatch_instr *instr = patch->patch;
+	while (1) {
+		int len = instr->length & BPT_LEN_MASK;
+		if (instr->length & BPT_SPECIAL) {
+			switch (instr->length) {
+			case BPT_CONST32:
+				*(void **) &loc[pos] = instr->data;
+				break;
+			case BPT_CONST8:
+				*(uint8_t *) &loc[pos] = (uint32_t) instr->data;
+				break;
+			case BPT_PAD(0x90):
+			case BPT_PAD(0xcc): ;
+				uint8_t byte = instr->length & 255;
+				len = (uint32_t) instr->data - pos;
+				memset(&loc[pos], byte, len);
+				break;
+			default:
+				errx(131, "illegal instruction type %04x in patch %s", instr->length, patch->name);
+			}
+		} else
+			memcpy(&loc[pos], instr->data, len);
+
+		pos += len;
+		if (instr->length & BPT_LAST)
+			break;
+		instr++;
+	}
+	if (pos > patch->crclen)
+		errx(131, "too many instructions for patch %s: %d bytes max %d", patch->name, pos, patch->crclen);
+
+	size_t offset = loc - base;
+	loc = memmem(loc + patch->crclen, length - offset - patch->crclen, patch->match, patch->matchlen);
+	if (loc)
+		errx(131, "ambiguous match for patch %s at %p", patch->name, loc);
+	return 1;
 }

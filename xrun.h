@@ -30,36 +30,11 @@ extern FILE *dostrace;
 struct dta;
 uint32_t dos_find_first(char *filename, struct dta *dta);
 uint32_t dos_access(char *filename, uint32_t mode);
+char *dos_getcwd(char *buffer, uint32_t size);
 void dos_unimpl(void);
+uint32_t dos_call(void);
 typedef uint32_t (*dosapi_handler)(void);
 extern dosapi_handler dosapi[256];
-
-typedef struct {
-	char *name;
-	uint32_t **target;
-	uint16_t bias;
-	uint16_t offsets[11];
-} detect_addr;
-typedef struct {
-	char *name;
-	uint16_t offset;
-	void *addr;
-	uint32_t **value;
-} patch_addr;
-typedef struct {
-	char *name;
-	uint16_t required;
-	uint16_t replen;
-	char *replacement;
-	int16_t matchpos;
-	uint16_t matchlen;
-	char *match;
-	uint16_t crclen;
-	uint32_t crc;
-	detect_addr *detect;
-	patch_addr *patch;
-} bin_patch;
-
-void binpatch(char *loadbase, size_t length, bin_patch *patches);
+uint32_t dos_set_errno(uint32_t dos_error_code);
 
 #endif
