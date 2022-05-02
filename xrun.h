@@ -33,6 +33,7 @@ uint32_t dos_access(char *filename, uint32_t mode);
 char *dos_getcwd(char *buffer, uint32_t size);
 void dos_unimpl(void);
 uint32_t dos_call(void);
+uint32_t dos_call_bios(uint32_t intnum);
 typedef uint32_t (*dosapi_handler)(void);
 extern dosapi_handler dosapi[256];
 uint32_t dos_set_errno(uint32_t dos_error_code);

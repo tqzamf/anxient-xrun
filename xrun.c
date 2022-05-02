@@ -13,8 +13,8 @@
 
 extern char **environ;
 
-// type of DOS extender: SG_ENV = 1 (SoftGuard), PL_ENV = 2 (Phar Lap), AI_ENV = 3 (unknown other vendor)
-// even though the bianries themselves have Phar Lap compiled in, the MetaWare libc is compiled to detect and support
+// type of DOS extender: SG_ENV = 1 (SoftGuard), PL_ENV = 2 (Phar Lap), AI_ENV = 3 (some unknown other vendor).
+// even though the binaries themselves have Phar Lap compiled in, the MetaWare libc is compiled to detect and support
 // all three
 static uint8_t *dos_extender_type;
 
@@ -160,6 +160,7 @@ uint32_t dos_set_errno(uint32_t dos_error_code) {
 static uint32_t linux_gs;
 #define ENTER_GS BP_ENTER, BP_PUSH_GS, BP_MOV_GS(linux_gs)
 #define LEAVE_GS BP_POP_GS, BP_LEAVE
+#define LEAVE_GS_POP(bytes) BP_POP_GS, BP_LEAVE_POP(bytes)
 
 // the generic DOS call trampoline. used by 99% of all DOS calls. it's a large function because it needs to set up all
 // the registers from memory for the actual INT 21 call. because we don't need any of that, there is plenty of room to
@@ -168,7 +169,7 @@ x86reg *eax, *ebx, *ecx, *edx, *esi, *edi;
 uint32_t *eflags;
 static bin_patch call_dos = {
 	"call_dos", 126, 0x85e9a644,
-	55, 8, "\x1f\xf8\xcd\x21\x5d\x1e\x8e\xdd", 
+	55, 8, "\x1f\xf8\xcd\x21\x5d\x1e\x8e\xdd",
 	{ ENTER_GS, BP_CALL_VIA_EAX(dos_call), LEAVE_GS },
 	{
 		{ "eax_ptr", (uint32_t **) &eax, -1, { 0x007, 0x04d, -1 }},
@@ -198,7 +199,7 @@ static bin_patch find_first = {
 		BP_PUSH_ARG(0), // char *filename
 		BP_CALL_VIA_EAX(dos_find_first), // call to cdecl-style function
 		BP_ADD_ESP(8), // clean up stack, cdecl is caller cleanup
-		LEAVE_GS 
+		LEAVE_GS
 	},
 	{ { "set_errno", &set_errno, 4, { 0x01e, -1 }}, BP_EOL }
 };
@@ -214,7 +215,7 @@ static bin_patch file_check_access = {
 		BP_PUSH_ARG(0), // char *filename
 		BP_CALL_VIA_EAX(dos_access), // call to cdecl-style function
 		BP_ADD_ESP(8), // clean up stack, cdecl is caller cleanup
-		LEAVE_GS 
+		LEAVE_GS
 	},
 	{ { "set_errno", &set_errno, 4, { 0x038, -1 }}, BP_EOL }
 };
@@ -230,9 +231,8 @@ static bin_patch get_cwd = {
 		BP_PUSH_ARG(0), // char *buffer
 		BP_CALL_VIA_EAX(dos_getcwd), // call to cdecl-style function
 		BP_ADD_ESP(8), // clean up stack, cdecl is caller cleanup
-		LEAVE_GS 
-	},
-	{
+		LEAVE_GS
+	}, {
 		{ "strlen", NULL, 4, { 0x029, -1 }},
 		{ "strcpy", NULL, 4, { 0x048, 0x075, -1 }},
 		{ "__unknown", NULL, 4, { 0x063, -1 }},
@@ -286,6 +286,56 @@ static bin_patch parport_access = {
 	9, 8, "\x8b\x75\x14\xe8\x0b\xfe\xff\xff",
 	{ BP_MOV_EAX_IMM(1), BP_RET }, // makebits needs a return value >0
 	{{ NULL }}
+};
+
+// the generic BIOS call trampoline. generally not used, except by programs trying to enter GUI mode. very similar to
+// the DOS call trampoline, including saving/restoring registers, and to the same locations. unlike the DOS call
+// trampoline, it self-modifies to set the interrupt vector number.
+// graphics is somewhat pointless to emulate because it works perfectly in dosbox. this isn't limited to emulating the
+// VGA BIOS; the XACT GUI also wants to talk to the BIOS keyboard interface and the mouse driver, and hijacks the system
+// tick interrupt. the only case where the GUI could be scripted is for printing an LCA design to PostScript, but that
+// also doesn't work that well on modern PostScript interpreters, and that same design can simply be viewed in editlca
+// in dosbox...
+// so instead we just show a message that GUI mode isn't supported.
+static bin_patch call_bios = {
+	"call_bios", 138, 0xe0e11daf,
+	67, 8, "\x1f\xf8\xcd\x0d\x5d\x1e\x8e\xdd",
+	{
+		ENTER_GS,
+		BP_PUSH_ARG(0), // interrupt number
+		BP_CALL_VIA_EAX(dos_call_bios), // call to cdecl-style function
+		BP_ADD_ESP(4), // clean up stack, cdecl is caller cleanup
+		LEAVE_GS_POP(4) // that function itself is callee-cleanup, though!
+	}, {
+		{ "intnum_loc", NULL, -1, { 0x00a, -1 }}, // self-modified location, second byte of INT 0x?? instruction
+		{ "eax_ptr", (uint32_t **) &eax, -1, { 0x013, 0x059, -1 }},
+		{ "ebx_ptr", (uint32_t **) &ebx, -1, { 0x019, 0x05f, -1 }},
+		{ "ecx_ptr", (uint32_t **) &ecx, -1, { 0x01f, 0x065, -1 }},
+		{ "edx_ptr", (uint32_t **) &edx, -1, { 0x025, 0x06b, -1 }},
+		{ "esi_ptr", (uint32_t **) &esi, -1, { 0x02b, 0x071, -1 }},
+		{ "edi_ptr", (uint32_t **) &edi, -1, { 0x031, 0x077, -1 }},
+		{ "es_ptr", NULL, -1, { 0x037, 0x054, -1 }},
+		{ "ds_ptr", NULL, -1, { 0x03f, 0x04d, -1 }},
+		{ "eflags_ptr", &eflags, -1, { 0x080, -1 }},
+		BP_EOL
+	}
+};
+
+// the (pretty complex) routine that emits a beep from the PC speaker, by direct IO port access. this beep isn't
+// terribly useful, and in xrun actually crashes the program on (rather minor) error conditions. so instead of emulating
+// the beep by sending 0x0a (BEL) to the terminal, we simply stub out the entire routine.
+static bin_patch pcspeaker_beep = {
+	"pcspeaker_beep", 179, 0x0a7030e9,
+	43, 8, "\x97\x8b\xc6\x0b\xc7\x50\x6a\x61",
+	{ BP_RET },
+	{
+		{ "beep_enable", NULL, -1, { 0x010, -1 }},
+		{ "get_machine_type", NULL, 4, { 0x01b, -1 }},
+		{ "inb_helper", NULL, 4, { 0x027, -1 }},
+		{ "outb_helper", NULL, 4, { 0x034, 0x089, 0x0a8, -1 }},
+		{ "read_bios_ticks", NULL, 4, { 0x04a, 0x066, -1 }},
+		BP_EOL
+	}
 };
 
 // xnfmerge uses AH=62 GET PSP ADDRESS as a (very bad) RNG. we substitute getpsp_badrng_seed, the low few bits of
@@ -352,7 +402,8 @@ int main(int argc, char **argv) {
 	binpatch((void *) loadbase, loadlimit - loadbase, &disable_break1);
 	binpatch((void *) loadbase, loadlimit - loadbase, &disable_break2);
 	binpatch((void *) loadbase, loadlimit - loadbase, &disable_break3);
-	binpatch((void *) loadbase, loadlimit - loadbase, &libc_init);
+	if (!binpatch((void *) loadbase, loadlimit - loadbase, &libc_init))
+		errx(255, "failed to detect libc init code!");
 	binpatch((void *) loadbase, loadlimit - loadbase, &call_dos);
 	binpatch((void *) loadbase, loadlimit - loadbase, &find_first);
 	binpatch((void *) loadbase, loadlimit - loadbase, &file_check_access);
@@ -361,6 +412,8 @@ int main(int argc, char **argv) {
 	binpatch((void *) loadbase, loadlimit - loadbase, &get_device_info);
 	binpatch((void *) loadbase, loadlimit - loadbase, &detect_keyboard);
 	binpatch((void *) loadbase, loadlimit - loadbase, &parport_access);
+	binpatch((void *) loadbase, loadlimit - loadbase, &call_bios);
+	binpatch((void *) loadbase, loadlimit - loadbase, &pcspeaker_beep);
 	struct timeval tv;
 	gettimeofday(&tv, NULL);
 	getpsp_badrng_seed = tv.tv_usec;

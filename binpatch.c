@@ -85,9 +85,15 @@ int binpatch(char *base, size_t length, bin_patch *patch) {
 		if (instr->length & BPT_SPECIAL) {
 			switch (instr->length) {
 			case BPT_CONST32:
+			case BPT_LAST | BPT_CONST32:
 				*(void **) &loc[pos] = instr->data;
 				break;
+			case BPT_CONST16:
+			case BPT_LAST | BPT_CONST16:
+				*(uint16_t *) &loc[pos] = (uint32_t) instr->data;
+				break;
 			case BPT_CONST8:
+			case BPT_LAST | BPT_CONST8:
 				*(uint8_t *) &loc[pos] = (uint32_t) instr->data;
 				break;
 			case BPT_PAD(0x90):

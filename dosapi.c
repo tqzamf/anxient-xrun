@@ -63,10 +63,6 @@ static uint32_t dos_exit(void) {
 	exit(eax->l);
 }
 
-void dos_unimpl(void) {
-	errx(133, "unsupported DOS call: INT 21 AH=%02x AL=%02x", eax->h, eax->l);
-}
-
 // filing functions. DOS 2+ (non-FCB) FS API is very, very close to UNIX FS API. and XACT does very little to its
 // filenames; it doesn't even consistently replace / with \ for filename separators.
 // internally, something crams file handles into a byte. so file descriptors have to be ≤255. luckily, they are
@@ -354,9 +350,20 @@ dosapi_handler dosapi[256] = {
 	[0x43] = _dos_getattr,
 };
 
+void dos_unimpl(void) {
+	errx(133, "unsupported DOS call: INT 21 AH=%02x AL=%02x", eax->h, eax->l);
+}
+
 uint32_t dos_call(void) {
 	dosapi_handler handler = dosapi[eax->h];
 	if (handler == 0)
 		dos_unimpl();
 	return *eflags = handler();
+}
+
+uint32_t dos_call_bios(uint32_t intnum) {
+	intnum &= 255;
+	if (intnum == 0x10 && eax->x == 0x1a00)
+		warnx("program trying to enter GUI mode. pass arguments, or use dosbox instead!");
+	errx(133, "unsupported BIOS call: INT %02x AH=%02x AL=%02x", intnum, eax->h, eax->l);
 }
