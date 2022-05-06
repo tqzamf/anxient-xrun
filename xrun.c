@@ -279,14 +279,6 @@ static bin_patch detect_keyboard = {
 	},
 	{ { "read_physical_memory", NULL, 4, { 0x00e, -1 }}, BP_EOL }
 };
-// large block of self-modifying code that eventually talks to the parallel port ­– using direct in/out instructions.
-// doesn't seem to affect the rest of the program, so it can just be skipped entirely.
-static bin_patch parport_access = {
-	"parport_access", 19, 0xdeacc472,
-	9, 8, "\x8b\x75\x14\xe8\x0b\xfe\xff\xff",
-	{ BP_MOV_EAX_IMM(1), BP_RET }, // makebits needs a return value >0
-	{{ NULL }}
-};
 
 // the generic BIOS call trampoline. generally not used, except by programs trying to enter GUI mode. very similar to
 // the DOS call trampoline, including saving/restoring registers, and to the same locations. unlike the DOS call
@@ -338,6 +330,15 @@ static bin_patch pcspeaker_beep = {
 	}
 };
 
+// large block of self-modifying code that eventually talks to the parallel port ­– using direct in/out instructions.
+// doesn't seem to affect the rest of the program, so it can just be skipped entirely.
+static bin_patch parport_access = {
+	"parport_access", 19, 0xdeacc472,
+	9, 8, "\x8b\x75\x14\xe8\x0b\xfe\xff\xff",
+	{ BP_MOV_EAX_IMM(1), BP_RET }, // makebits needs a return value >0
+	{{ NULL }}
+};
+
 // xnfmerge uses AH=62 GET PSP ADDRESS as a (very bad) RNG. we substitute getpsp_badrng_seed, the low few bits of
 // tv_usec, which is probably a much more random value.
 static uint32_t getpsp_badrng_seed;
@@ -376,15 +377,15 @@ int main(int argc, char **argv) {
 	// find the binary to run
 	char *progname = exists("", argv[1], "");
 	if (!progname)
-		progname = exists("", argv[1], ".exe");
-	if (!progname)
 		progname = exists(xactdir, argv[1], "");
+	if (!progname)
+		progname = exists("", argv[1], ".exe");
 	if (!progname)
 		progname = exists(xactdir, argv[1], ".exe");
 	if (!progname)
 		errx(255, "cannot find %s or %s.exe here or in %s", argv[1], argv[1], xactdir);
-	//char *progname = argv[1];
-	argv[1] = progname;
+	char *basename = rindex(progname, '/');
+	argv[1] = basename ? basename + 1 : progname;
 
 	// debug mode: enable SIGSEGV-based emulation of DOS calls, and also trace all DOS API calls
 	char *tracefile = getenv("XRUN_TRACE");
@@ -411,9 +412,13 @@ int main(int argc, char **argv) {
 	binpatch((void *) loadbase, loadlimit - loadbase, &get_current_drive);
 	binpatch((void *) loadbase, loadlimit - loadbase, &get_device_info);
 	binpatch((void *) loadbase, loadlimit - loadbase, &detect_keyboard);
-	binpatch((void *) loadbase, loadlimit - loadbase, &parport_access);
 	binpatch((void *) loadbase, loadlimit - loadbase, &call_bios);
 	binpatch((void *) loadbase, loadlimit - loadbase, &pcspeaker_beep);
+	char *ppapatch = memmem((void *) loadbase, loadlimit - loadbase, "\xb8\x01\x00\x00\x00\xc3\x8b\x7d\x08", 9);
+	if (!ppapatch)
+		binpatch((void *) loadbase, loadlimit - loadbase, &parport_access);
+	else if (dostrace)
+		fprintf(dostrace, "skipping patch parport_access: already applied at %p\n", ppapatch);
 	struct timeval tv;
 	gettimeofday(&tv, NULL);
 	getpsp_badrng_seed = tv.tv_usec;
