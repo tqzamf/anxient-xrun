@@ -427,15 +427,19 @@ int main(int argc, char **argv) {
 	// build environment block
 	// note MACHINE=IBMPC is crucial. otherwise the libc tries to read the machine type byte from BIOS using a physical
 	// memory read. physical memory reads set the magic descriptor DS=0x34, and that in turn obviously fails on Linux.
+	// COMSPEC is read, and then not used, by apr.exe. it may be an attempt at entropy generation, but it's a very bad
+	// one at that because the value is basically constant under DOS. the address might be less constant, but it should
+	// be mostly deterministic, too. (ironically, the address *is* somewhat random, and actually quite unpredictable,
+	// on Linux because of ASLR... but in any case, it should be as random as can be expected under DOS.)
 	// and yes, we just pass the entire shebang... BASH option, PATH, XAUTHORITY... XACT is at its heart a UNIX
 	// toolchain and just simply doesn't care. and while it translates / to \ in most cases, it doesn't even notice that
 	// it's messing with a UNIX-style path for $XACT here ;)
-	int envlen = 15;
+	int envlen = 32;
 	for (char **envvar = environ; *envvar; envvar++)
 		envlen += strlen(*envvar) + 1;
 	char *envblock = malloc(envlen);
-	strcpy(envblock, "MACHINE=IBMPC");
-	char *envpos = &envblock[14];
+	memcpy(envblock, "MACHINE=IBMPC\0COMSPEC=A:\\bin\\sh", 32);
+	char *envpos = &envblock[32];
 	for (char **envvar = environ; *envvar; envvar++) {
 		for (char *ch = *envvar; *ch; ch++)
 			*envpos++ = *ch;
