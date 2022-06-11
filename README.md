@@ -68,6 +68,52 @@ to the name of a file to log DOS API calls to. this can be very helpful to trace
 show up as segfaults. (they aren't. usually it's an `INT 21` DOS call or some other privileged instruction.) setting
 `XRUN_TRACE` also sets up a SIGSEGV handler that emulates DOS calls, so it may actually fix the bug for the time being.
 
+## tools that work with xrun
+
+all tool required to compile and simulate a design work; most even take long filenames. XACTstep is picky about file
+extensions, but so is gcc. a few tools are limited to 8.3 filenames though; use temporary files for those.
+
+- `xnfmerge`
+- `xnfprep` (8.3 filenames with all-lowercase letters)
+- `xnfmap`
+- `map2lca`
+- `apr` (don't forget `-w`)
+- `makebits`
+- `xdelay` (as long as you pass arguments, otherwise it tries to start its not-very-helpful GUI)
+- `improvex` (though unfortunately `-g speed` crashes on the example design)
+- `makeprom` (as long as you pass arguments, otherwise it tries to start its GUI)
+- `lca2xnf`
+- `xnfba`
+- `ppr` (8.3 filenames)
+
+the `make` directory contains example Makefiles that have been tested to produce a plausible-loking design for each chip
+family. these also take care to appropriately rename files for tools that have an 8.3 character limitation. it also
+contains a `.gitignore` file to ignore the 11 intermediate files (not counting XNF and LCA) and the 11 report files that
+XACTstep writes. XACTstep is pretty messy with its temp files, but both make and git are very good at dealing with that.
+
+# auxiliary tools what also work
+
+- `cstcvt` (8.3 filenames)
+- `hm2rpm` (8.3 filenames)
+- `memgen` (8.3 filenames; not really tested)
+- `symgen` (8.3 filenames)
+- `tsprep` (8.3 filenames)
+- `xnfcvt`
+
+no, those aren't placed as "auxiliary" because they are limited to 8.3 filenames. they're placed here because they are
+nonessential to compiling a design, getting a bitstream and timing the design.
+
+## important tools that don't work
+
+- `aprloop`, but running `apr` in a loop is better done using the normal shell anyway
+- `xmake`, which is why there is a directory full of example Makefiles for normal (GNU) `make`
+- `synthx`, the BLIF to XNF converter. replaced by XSynth, which also adds a way to specify IO pads
+- `xact`, the Design Editor, because of its GUI. can be started in DOSBox, mostly for its `editlca` command
+- `xdm`, the Design Manager, because of its GUI. can be started in DOSBox
+- `xchecker`, `xck88` (the programmers) because they obviously cannot talk to the hardware. for a modern system,
+  `xc3sprog` using a USB platform cable is more usefuly anyway
+- `xblox`, needs further analysis
+
 # alternatives
 
 ## DOSBox
@@ -80,7 +126,11 @@ screen.
 
 one important tool that requires DOSBox is the `editlca` command of `xact.exe`. actually editing `.lca` files at that
 level isn't recommended, but it's a great way to check a design. `editlca.sh` shows how to directly start a command in
-DOSBox; omitting `-e $*` would start the main XACTstep GUI. to ungrab the mouse, press Ctrl-F10.
+DOSBox; omitting `-e $*` would start the main XACTstep GUI.
+
+- to edit / view a CLB or IOB in `editlca`, enter `eb` and click it. `end` returns to the chip overview.
+- click and anti-drag (it moves the "wrong" direction) to pan the design. to ungrab the mouse, press Ctrl-F10.
+- `q` returns to the XACT design manager window and another `q` closes Design Manager itself.
 
 however, DOSBox pops up a window, and on a 3GHz CPU it is equivalent to a ~25MHz i386. that's actually an advantage for
 speed-sensitive games, but it means XACTstep runs about as fast as it did back in the day: very slowly.
