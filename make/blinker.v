@@ -12,7 +12,7 @@ always @(posedge clock) begin
 end
 
 always @(posedge div[20]) begin
-	shift[0:2] <= {~shift[2], shift[0:1]};
+	shift[0:2] <= {!shift[2], shift[0:1]};
 end
 
 always @(posedge clock) begin
