@@ -8,7 +8,7 @@ different chip families use different tools and different intermediate files.
   the demo design for an XC2000 or XC3000 series chip.)
 - `Makefile.3ka` works for XC3000A and XC3100A chips. the resulting bitstream does *not* necessarily work for XC3000
   and XC3100 chips because the A-suffix chips have additional features that the bitstream might be using.
-- `Makefile.5k2` works for XC5200 and XC4000 chips.
+- `Makefile.5k2` and `Makefile.4k` both work for XC5200 and XC4000 chips. (the difference is the chip they build for.)
 
 these Makefiles also use XSynth to build the design from Verilog. the demo design `blinker.v` simply blinks a few LEDs,
 but is enough to verify that the toolchain (or a chip) works. they also call `improvex`, which is part of the ds371 ABEL

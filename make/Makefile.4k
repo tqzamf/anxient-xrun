@@ -1,0 +1,44 @@
+XACT=/opt/xilinx/xactstep
+XRUN=XACT=$(XACT) $(XACT)/xrun
+XSYNTH=java -jar /opt/xilinx/xactstep/xsynth.jar
+PART=4005pq100-5
+TARGETS=blinker.rbt
+
+all: $(TARGETS)
+
+clean:
+	rm -f *~ $(TARGETS) *.xnf *.blif *.lca *.bit *.rbt \
+			temp.xff temp.xnf temp.lca temp.scp *.xtf *.cst *.pgf *.map *.scp *.xas \
+			*.prp *.mrg *.mbo *.rpt *.crf *.rep xnfprep.log
+
+# this needs to be done in 2 steps because xnfprep is picky about what filenames it accepts
+# improvex may crash; remove it if it does
+%.xtf: %.xnf
+	$(XRUN) improvex -o temp.xnf -p 4k -x $<
+	$(XRUN) xnfmerge temp.xnf temp.xff
+	$(XRUN) xnfprep temp.xff temp.xtf
+	rm temp.xff temp.xnf
+	mv temp.xtf $@
+	mv temp.prp $*.prp
+	mv temp.mrg $*.mrg
+
+# annoyingly, ppr also has an 8.3 limit
+%.lca: %.xtf
+	cp $< temp.xtf
+	$(XRUN) ppr temp
+	rm temp.map
+	mv temp.lca $@
+
+%.rbt: %.lca
+	$(XRUN) makebits -b $<
+%.bit: %.lca
+	$(XRUN) makebits $<
+
+# these rules are specific to XSynth and are provided to illustrate its use
+%.blif: %.v
+	iverilog -t blif -o $@ $<
+
+%.xnf: %.blif %_4k.io
+	$(XSYNTH) convert -p $(PART) -o $@ $^
+
+.PHONY: all clean
